@@ -241,7 +241,7 @@
     <div id="legend">
       <div class="pill">Color ↔ lineage</div>
       <p><strong>Color:</strong> Encodes family trees: founders set a base hue, with subtle shifts per descendant generation.</p>
-      <p><strong>Inputs:</strong> 5 directional food rays across a 120° FOV (left → right), plus energy level and a bias term.</p>
+      <p><strong>Inputs:</strong> 5 food rays + 5 blob rays across a 120° FOV (left → right), plus energy level and a bias term.</p>
       <p><strong>Hidden layers:</strong> 16 neurons → 16 neurons.</p>
       <p><strong>Outputs:</strong> Turn and thrust control the blob’s heading and speed.</p>
       <p><strong>World edges:</strong> Blobs bounce off the borders of the world; no wrapping.</p>
@@ -297,8 +297,8 @@
     weightMutation: 0.04,
 
     // Neural network sizes
-    // 5 food rays + energy + bias = 7 inputs
-    nnInputSize: 7,
+    // 5 food rays + 5 blob rays + energy + bias = 12 inputs
+    nnInputSize: 12,
     nnHidden1Size: 16,
     nnHidden2Size: 16,
     nnOutputSize: 2
@@ -520,8 +520,8 @@
       }
     }
 
-    // 5-ray food sensing across the FOV
-    sense(foods) {
+    // 5-ray food and blob sensing across the FOV
+    sense(foods, blobs) {
       const sensorRange = this.traits.sensorRange;
       const sensorRangeSq = sensorRange * sensorRange;
 
@@ -529,7 +529,8 @@
       const halfFov = fovRad / 2;
 
       const rayCount = 5;
-      const rayDistSq = new Array(rayCount).fill(Infinity);
+      const foodRayDistSq = new Array(rayCount).fill(Infinity);
+      const blobRayDistSq = new Array(rayCount).fill(Infinity);
 
       for (let i = 0; i < foods.length; i++) {
         const f = foods[i];
@@ -551,39 +552,77 @@
         let idx = Math.round(t * (rayCount - 1));     // 0..4
         idx = clamp(idx, 0, rayCount - 1);
 
-        if (d2 < rayDistSq[idx]) {
-          rayDistSq[idx] = d2;
+        if (d2 < foodRayDistSq[idx]) {
+          foodRayDistSq[idx] = d2;
+        }
+      }
+
+      for (let i = 0; i < blobs.length; i++) {
+        const other = blobs[i];
+        if (other === this || other.dead) continue;
+
+        const dx = other.x - this.x;
+        const dy = other.y - this.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > sensorRangeSq) continue;
+
+        const angleToBlob = Math.atan2(dy, dx);
+        let relAngle = angleToBlob - this.heading;
+
+        // Wrap to [-PI, PI]
+        while (relAngle > Math.PI) relAngle -= Math.PI * 2;
+        while (relAngle < -Math.PI) relAngle += Math.PI * 2;
+
+        if (Math.abs(relAngle) > halfFov) continue;
+
+        const t = (relAngle + halfFov) / fovRad;      // 0..1
+        let idx = Math.round(t * (rayCount - 1));     // 0..4
+        idx = clamp(idx, 0, rayCount - 1);
+
+        if (d2 < blobRayDistSq[idx]) {
+          blobRayDistSq[idx] = d2;
         }
       }
 
       // Convert ray distances to [0,1] signals
-      const raySignals = new Array(rayCount).fill(0);
-      for (let r = 0; r < rayCount; r++) {
-        if (rayDistSq[r] < Infinity) {
-          const dist = Math.sqrt(rayDistSq[r]);
-          raySignals[r] = 1 - clamp(dist / sensorRange, 0, 1);
-        } else {
-          raySignals[r] = 0;
+      function toSignals(rayDistSq) {
+        const signals = new Array(rayCount).fill(0);
+        for (let r = 0; r < rayCount; r++) {
+          if (rayDistSq[r] < Infinity) {
+            const dist = Math.sqrt(rayDistSq[r]);
+            signals[r] = 1 - clamp(dist / sensorRange, 0, 1);
+          } else {
+            signals[r] = 0;
+          }
         }
+        return signals;
       }
+
+      const foodSignals = toSignals(foodRayDistSq);
+      const blobSignals = toSignals(blobRayDistSq);
 
       const energyNorm = clamp(this.energy / CONFIG.reproductionEnergy, 0, 1);
       const bias = 1;
 
-      // 7 inputs: 5 rays (L → R), energy, bias
+      // 12 inputs: 5 food rays + 5 blob rays (L → R), energy, bias
       return [
-        raySignals[0],
-        raySignals[1],
-        raySignals[2],
-        raySignals[3],
-        raySignals[4],
+        foodSignals[0],
+        foodSignals[1],
+        foodSignals[2],
+        foodSignals[3],
+        foodSignals[4],
+        blobSignals[0],
+        blobSignals[1],
+        blobSignals[2],
+        blobSignals[3],
+        blobSignals[4],
         energyNorm,
         bias
       ];
     }
 
     update(dt, foods, blobs, stats) {
-      const inputs = this.sense(foods);
+      const inputs = this.sense(foods, blobs);
       const [turnOutRaw, thrustOutRaw] = this.brain.forward(inputs);
 
       const turnOut = clamp(turnOutRaw, -1, 1);
@@ -1009,17 +1048,22 @@
     nnCtx.textAlign = "center";
     nnCtx.textBaseline = "top";
 
-    if (inputNodes.length === 7) {
+    if (inputNodes.length === 12) {
       const labels = [
-        "ray L",
-        "ray L-mid",
-        "ray C",
-        "ray R-mid",
-        "ray R",
+        "food L",
+        "food L-mid",
+        "food C",
+        "food R-mid",
+        "food R",
+        "blob L",
+        "blob L-mid",
+        "blob C",
+        "blob R-mid",
+        "blob R",
         "energy",
         "bias"
       ];
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < labels.length; i++) {
         nnCtx.fillText(labels[i], inputNodes[i].x, inputNodes[i].y + 10);
       }
     }
