@@ -239,13 +239,13 @@
     <div id="stats"></div>
 
     <div id="legend">
-      <div class="pill">Color ↔ neural brain</div>
-      <p><strong>Color:</strong> Encodes a widened mapping of each blob’s neural network weights. Small brain differences now produce more distinct hues.</p>
+      <div class="pill">Color ↔ lineage</div>
+      <p><strong>Color:</strong> Encodes family trees: founders set a base hue, with subtle shifts per descendant generation.</p>
       <p><strong>Inputs:</strong> 5 directional food rays across a 120° FOV (left → right), plus energy level and a bias term.</p>
       <p><strong>Hidden layers:</strong> 16 neurons → 16 neurons.</p>
       <p><strong>Outputs:</strong> Turn and thrust control the blob’s heading and speed.</p>
       <p><strong>World edges:</strong> Blobs bounce off the borders of the world; no wrapping.</p>
-      <p><strong>Food:</strong> Environment slowly refills food up to a cap, at the adjustable spawn rate.</p>
+      <p><strong>Food:</strong> Environment slowly refills food up to a cap, at the adjustable spawn rate. Distantly related blobs may also opportunistically consume one another.</p>
       <p class="footer-note">
         Watch color clusters and the visual NN as lineages explore deeper 2-layer brains.
       </p>
@@ -274,6 +274,12 @@
     initialEnergy: 80,
     reproductionEnergy: 200,
     minEnergyToLive: 0,
+
+    // Predation
+    predationChance: 0.22,
+    predationEnergyTransfer: 0.8,
+    predationReachFactor: 1.6,
+    relatednessThreshold: 0.35,
 
     // Field of view (degrees)
     fovDegrees: 120,         // blobs can see 120° in front
@@ -427,8 +433,11 @@
 
   // --- BLOB ---------------------------------------------------------------
 
+  let NEXT_BLOB_ID = 1;
+
   class Blob {
-    constructor(x, y, traits, brain, generation = 1) {
+    constructor(x, y, traits, brain, generation = 1, parent = null, lineageRootId = null, lineagePath = null) {
+      this.id = NEXT_BLOB_ID++;
       this.x = x;
       this.y = y;
       this.heading = Math.random() * Math.PI * 2;
@@ -436,6 +445,9 @@
       this.traits = traits;
       this.brain = brain;
       this.generation = generation;
+
+      this.lineageRootId = lineageRootId ?? (parent ? parent.lineageRootId : this.id);
+      this.lineagePath = lineagePath ? [...lineagePath, this.id] : [this.id];
     }
 
     static randomTraits() {
@@ -463,76 +475,49 @@
       return 4.0 * this.traits.size;
     }
 
-    // Wider hue & contrast from neural network weights/biases
+    // Color encodes lineage rather than brain weights
     getColor() {
-      const brain = this.brain;
-      if (!brain) return "#ffffff";
+      const rootHue = (this.lineageRootId * 47) % 360;
+      const branchHue = (this.lineagePath[this.lineagePath.length - 1] * 29.7) % 36;
+      const hue = (rootHue + branchHue) % 360;
 
-      const weights = [];
-
-      // Flatten input→hidden1 weights
-      for (let r = 0; r < brain.weightsIH.length; r++) {
-        const row = brain.weightsIH[r];
-        for (let c = 0; c < row.length; c++) {
-          weights.push(row[c]);
-        }
-      }
-
-      // Flatten hidden1→hidden2 weights
-      for (let r = 0; r < brain.weightsHH.length; r++) {
-        const row = brain.weightsHH[r];
-        for (let c = 0; c < row.length; c++) {
-          weights.push(row[c]);
-        }
-      }
-
-      // Flatten hidden2→output weights
-      for (let r = 0; r < brain.weightsHO.length; r++) {
-        const row = brain.weightsHO[r];
-        for (let c = 0; c < row.length; c++) {
-          weights.push(row[c]);
-        }
-      }
-
-      // Add biases
-      for (let i = 0; i < brain.biasH1.length; i++) {
-        weights.push(brain.biasH1[i]);
-      }
-      for (let i = 0; i < brain.biasH2.length; i++) {
-        weights.push(brain.biasH2[i]);
-      }
-      for (let i = 0; i < brain.biasO.length; i++) {
-        weights.push(brain.biasO[i]);
-      }
-
-      const n = weights.length || 1;
-      let sum = 0;
-      let sumSq = 0;
-      let hash = 0;
-
-      for (let i = 0; i < n; i++) {
-        const w = weights[i];
-        sum += w;
-        sumSq += w * w;
-        hash += Math.sin(w * (i + 1) * 1.137);
-      }
-
-      const mean = sum / n;
-      const meanSq = sumSq / n;
-      const variance = Math.max(0, meanSq - mean * mean);
-      const std = Math.sqrt(variance);
-
-      const fMean = (Math.tanh(mean * 0.8) + 1) / 2; // 0..1
-      const fStd = (Math.tanh(std * 1.2) + 1) / 2;   // 0..1
-      const fHash = (Math.tanh(hash * 0.5) + 1) / 2; // 0..1
-
-      const hueBase = fMean * 0.55 + fHash * 0.45;
-      const hue = (hueBase * 360 * 3) % 360;
-
-      const saturation = 55 + 45 * fStd;   // 55–100%
-      const lightness = 30 + 40 * fHash;   // 30–70%
+      const saturation = 60 + Math.min(this.generation * 3, 25);
+      const lightness = clamp(30 + this.generation * 2 + (this.lineagePath.length % 6) * 2, 30, 70);
 
       return `hsl(${hue.toFixed(0)}, ${saturation.toFixed(0)}%, ${lightness.toFixed(0)}%)`;
+    }
+
+    relatedness(other) {
+      const len = Math.min(this.lineagePath.length, other.lineagePath.length);
+      let common = 0;
+      for (let i = 0; i < len; i++) {
+        if (this.lineagePath[i] !== other.lineagePath[i]) break;
+        common++;
+      }
+      const longest = Math.max(this.lineagePath.length, other.lineagePath.length);
+      return longest === 0 ? 0 : common / longest;
+    }
+
+    attemptPredation(blobs, stats) {
+      const attackRadius = this.radius * CONFIG.predationReachFactor;
+      const attackRadiusSq = attackRadius * attackRadius;
+
+      for (let i = 0; i < blobs.length; i++) {
+        const other = blobs[i];
+        if (other === this || other.dead) continue;
+
+        const relatedness = this.relatedness(other);
+        if (relatedness >= CONFIG.relatednessThreshold) continue;
+
+        if (distanceSq(this, other) <= attackRadiusSq && Math.random() < CONFIG.predationChance) {
+          other.dead = true;
+          const transferred = other.energy * CONFIG.predationEnergyTransfer;
+          this.energy += transferred;
+          stats.predations++;
+          stats.deaths++;
+          break;
+        }
+      }
     }
 
     // 5-ray food sensing across the FOV
@@ -661,7 +646,16 @@
           blobs.length < CONFIG.maxBlobs) {
         const childTraits = Blob.mutateTraits(this.traits);
         const childBrain = Brain.cloneAndMutate(this.brain, CONFIG.weightMutation);
-        const child = new Blob(this.x, this.y, childTraits, childBrain, this.generation + 1);
+        const child = new Blob(
+          this.x,
+          this.y,
+          childTraits,
+          childBrain,
+          this.generation + 1,
+          this,
+          this.lineageRootId,
+          this.lineagePath
+        );
 
         child.energy = this.energy * 0.5;
         this.energy *= 0.5;
@@ -676,6 +670,10 @@
       if (this.energy <= CONFIG.minEnergyToLive) {
         this.dead = true;
         stats.deaths++;
+      }
+
+      if (!this.dead) {
+        this.attemptPredation(blobs, stats);
       }
     }
 
@@ -742,7 +740,8 @@
     deaths: 0,
     foodEaten: 0,
     ticks: 0,
-    maxGeneration: 1
+    maxGeneration: 1,
+    predations: 0
   };
 
   function spawnFood(n) {
@@ -757,12 +756,14 @@
   function initSimulation() {
     blobs = [];
     foods = [];
+    NEXT_BLOB_ID = 1;
 
     stats.births = 0;
     stats.deaths = 0;
     stats.foodEaten = 0;
     stats.ticks = 0;
     stats.maxGeneration = 1;
+    stats.predations = 0;
 
     // Reset spawn rate state
     foodSpawnRate = parseFloat(document.getElementById("foodRateSlider").value) || CONFIG.defaultFoodSpawnRate;
@@ -1169,6 +1170,7 @@
       <div>Sensor range: <code>${avgSensor}</code></div>
       <div>Size: <code>${avgSize}</code></div>
       <div style="margin-top:6px;"><strong>Food eaten:</strong> ${stats.foodEaten}</div>
+      <div><strong>Predation events:</strong> ${stats.predations}</div>
       <div style="margin-top:6px;"><strong>Food spawn rate:</strong> ${foodSpawnRate.toFixed(1)} / s</div>
       <div><strong>FOV:</strong> ${CONFIG.fovDegrees}&deg;</div>
     `;
